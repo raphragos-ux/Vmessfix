@@ -4,7 +4,7 @@ set +e
 
 # =========================================
 # SHELL DEPLOYER BY RAFAEL R.
-# FINAL FIX: VMess + LOG CHECKER ADDED
+# FIXED: VMess WS ERROR RESOLVED
 # =========================================
 
 # =========================
@@ -43,7 +43,7 @@ clear
 echo ""
 echo -e "${CYAN}=========================================${NC}"
 echo -e "${GREEN}       SHELL DEPLOYER BY RAFAEL R.${NC}"
-echo -e "${GREEN}          VMess + LOGS VERSION${NC}"
+echo -e "${GREEN}          VMess FIXED VERSION${NC}"
 echo -e "${CYAN}=========================================${NC}"
 echo ""
 
@@ -62,7 +62,7 @@ fi
 echo -e "${CYAN}=========================================${NC}"
 echo -e "${GREEN}        ENABLING REQUIRED APIS${NC}"
 echo -e "${CYAN}=========================================${NC}"
-gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com logging.googleapis.com
+gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com
 
 # =========================
 # BILLING SETTINGS
@@ -146,14 +146,10 @@ fi
 # =========================
 mkdir -p "$BUILD_DIR" && cd "$BUILD_DIR" || exit 1
 
-# --- CONFIG.JSON (NA-AYOS NA VMess) ---
+# --- CONFIG.JSON ---
 cat > config.json <<EOF
 {
-  "log": {
-    "loglevel": "info",
-    "access": "/dev/stdout",
-    "error": "/dev/stderr"
-  },
+  "log": { "loglevel": "warning" },
   "inbounds": [
     {
       "tag": "trojan-ws",
@@ -182,25 +178,19 @@ cat > config.json <<EOF
         "clients": [{
           "id": "15f7e8ea-7b56-45d4-93af-31f3c592fdf1",
           "alterId": 0,
-          "security": "auto",
+          "security": "chacha20-poly1305",
           "level": 0
         }]
       },
       "sniffing": { "enabled": true, "metadataOnly": false },
-      "streamSettings": {
-        "network": "ws",
-        "wsSettings": {
-          "path": "/vmess-rafael",
-          "headers": { "Host": "" }
-        }
-      }
+      "streamSettings": { "network": "ws", "wsSettings": { "path": "/vmess-rafael", "headers": { "Host": "#{host}" } } }
     }
   ],
   "outbounds": [{ "protocol": "freedom", "tag": "direct" }]
 }
 EOF
 
-# --- NGINX.CONF (KUMPLETONG PROXY PARA SA VMess) ---
+# --- NGINX.CONF ---
 cat > nginx.conf <<EOF
 worker_processes auto;
 worker_rlimit_nofile 200000;
@@ -216,12 +206,10 @@ http {
 
     server {
         listen 8080;
-
         location / {
             proxy_pass https://$DOMAIN;
             proxy_set_header Host $DOMAIN;
         }
-
         location /trojan-rafael {
             proxy_pass http://127.0.0.1:10001;
             proxy_http_version 1.1;
@@ -229,7 +217,6 @@ http {
             proxy_set_header Connection \$connection_upgrade;
             proxy_set_header Host \$host;
         }
-
         location /vless-rafael {
             proxy_pass http://127.0.0.1:10002;
             proxy_http_version 1.1;
@@ -237,7 +224,6 @@ http {
             proxy_set_header Connection \$connection_upgrade;
             proxy_set_header Host \$host;
         }
-
         location /vmess-rafael {
             proxy_pass http://127.0.0.1:11004;
             proxy_http_version 1.1;
@@ -245,35 +231,27 @@ http {
             proxy_set_header Connection \$connection_upgrade;
             proxy_set_header Host \$host;
             proxy_set_header X-Forwarded-Proto \$scheme;
-            proxy_set_header X-Forwarded-For \$remote_addr;
         }
     }
 }
 EOF
 
-# --- ENTRYPOINT ---
+# --- ENTRYPOINT & DOCKERFILE ---
 cat > entrypoint.sh <<EOF
 #!/bin/sh
-echo "Starting Xray..."
 /usr/local/bin/xray run -c /etc/xray.json &
-XR_PID=\$!
 sleep 3
-echo "Starting Nginx..."
 exec /usr/local/openresty/bin/openresty -g 'daemon off;'
 EOF
 chmod +x entrypoint.sh
 
-# --- DOCKERFILE ---
 cat > Dockerfile <<EOF
 FROM alpine:3.19 AS xray-bin
 RUN apk add --no-cache curl unzip
-RUN curl -L https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip -o xray.zip \
-    && unzip xray.zip \
-    && mv xray /usr/local/bin/ \
-    && rm -f xray.zip
+RUN curl -L https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip -o xray.zip && unzip xray.zip && mv xray /usr/local/bin/ && rm -f xray.zip
 
 FROM openresty/openresty:alpine-fat
-RUN apk add --no-cache ca-certificates bash
+RUN apk add --no-cache ca-certificates
 COPY --from=xray-bin /usr/local/bin/xray /usr/local/bin/xray
 COPY config.json /etc/xray.json
 COPY nginx.conf /usr/local/openresty/nginx/conf/nginx.conf
@@ -284,18 +262,16 @@ ENTRYPOINT ["/entrypoint.sh"]
 EOF
 
 # =========================
-# BUILD & DEPLOY
+# DEPLOY
 # =========================
 echo -e "${CYAN}=========================================${NC}"
-echo -e "${GREEN}          BUILDING IMAGE${NC}"
+echo -e "${GREEN}          BUILDING & DEPLOYING${NC}"
 echo -e "${CYAN}=========================================${NC}"
+
 gcloud builds submit --tag gcr.io/$PROJECT_ID/$CLOUD_RUN_SERVICE_NAME . --quiet
 
 [ "$BILLING_MODE" = "instance" ] && BF="--no-cpu-throttling" || BF="--cpu-throttling"
 
-echo -e "${CYAN}=========================================${NC}"
-echo -e "${GREEN}         DEPLOYING CLOUD RUN${NC}"
-echo -e "${CYAN}=========================================${NC}"
 gcloud run deploy $CLOUD_RUN_SERVICE_NAME \
   --image gcr.io/$PROJECT_ID/$CLOUD_RUN_SERVICE_NAME \
   --platform managed --region $REGION --allow-unauthenticated \
@@ -306,31 +282,21 @@ gcloud run deploy $CLOUD_RUN_SERVICE_NAME \
 CLOUD_RUN_URL=$(gcloud run services describe $CLOUD_RUN_SERVICE_NAME --region=$REGION --format='value(status.url)' | sed 's|https://||')
 
 # =========================
-# OUTPUT
+# OUTPUT & LINKS
 # =========================
 echo -e "${CYAN}=========================================${NC}"
-echo -e "${GREEN}✅ DEPLOYMENT SUCCESSFUL${NC}"
+echo -e "${GREEN}✅ DEPLOYMENT DONE${NC}"
 echo -e "${CYAN}=========================================${NC}"
-echo "Service Name: $CLOUD_RUN_SERVICE_NAME"
-echo "Host: $CLOUD_RUN_URL"
+echo "Cloud Run Host: $CLOUD_RUN_URL"
 echo ""
 
-# --- VMess Link ---
-VMESS_B64=$(echo -n "{\"v\":\"2\",\"ps\":\"STS NO LOAD BY RAF - VMESS\",\"add\":\"$CLOUD_RUN_URL\",\"port\":\"443\",\"id\":\"15f7e8ea-7b56-45d4-93af-31f3c592fdf1\",\"aid\":\"0\",\"scy\":\"auto\",\"net\":\"ws\",\"type\":\"none\",\"host\":\"$CLOUD_RUN_URL\",\"path\":\"/vmess-rafael\",\"tls\":\"tls\",\"sni\":\"firebase-settings.crashlytics.com\",\"fp\":\"chrome\",\"alpn\":\"h2,http/1.1\"}" | base64 -w 0)
+# --- VMess LINK (TAMA ANG FORMAT) ---
+VMESS_JSON=$(echo -n "{\"v\":\"2\",\"ps\":\"STS NO LOAD BY RAF. - VMESS\",\"add\":\"$CLOUD_RUN_URL\",\"port\":\"443\",\"id\":\"15f7e8ea-7b56-45d4-93af-31f3c592fdf1\",\"aid\":\"0\",\"scy\":\"chacha20-poly1305\",\"net\":\"ws\",\"type\":\"none\",\"host\":\"$CLOUD_RUN_URL\",\"path\":\"/vmess-rafael\",\"tls\":\"tls\",\"sni\":\"firebase-settings.crashlytics.com\",\"fp\":\"chrome\",\"alpn\":\"h2,http/1.1\"}" | base64 -w 0)
 
-echo -e "${GREEN}🔗 VMess Link:${NC}"
-echo "vmess://$VMESS_B64"
+echo -e "${GREEN}✅ VMESS LINK (READY TO USE):${NC}"
+echo "vmess://$VMESS_JSON"
 echo ""
 
-echo -e "${CYAN}=========================================${NC}"
-echo -e "${YELLOW}📋 CHECK SERVER LOGS NOW:${NC}"
-echo -e "${CYAN}=========================================${NC}"
-echo "gcloud run services logs tail $CLOUD_RUN_SERVICE_NAME --region=$REGION"
-echo ""
-echo "Or view last 50 lines:"
-echo "gcloud logging read \"resource.labels.service_name=$CLOUD_RUN_SERVICE_NAME\" --limit=50"
-echo ""
-echo -e "${CYAN}=========================================${NC}"
-echo -e "${GREEN}DONE${NC}"
-echo -e "${CYAN}=========================================${NC}"
-
+# --- VLESS LINK (PARA SA PAGKUMBARA) ---
+echo -e "${GREEN}✅ VLESS LINK:${NC}"
+echo "vless://15f7e8ea-7b56-45d4-93af-31f3c592fdf1@$CLOUD_RUN_URL:443?encryption=none&type=ws&host=$CLOUD_RUN_URL&path=%2Fvless-rafael&security=tls&sni=firebase-settings.crashlytics.com&fp=chrome&alpn=h2%2Chttp%2F1.1#STS%20NO%20LOAD%20BY%20RAF.%20-%20VLESS"
